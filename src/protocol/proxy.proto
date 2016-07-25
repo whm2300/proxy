@@ -1,0 +1,5 @@
+message NewConnection {
+    required int32 token = 1;
+    required int32 from_port = 2;
+    required int32 to_prot = 3;
+}

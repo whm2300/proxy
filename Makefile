@@ -4,6 +4,8 @@ all:
 	mkdir -p $(OBJS_PATH)
 	mkdir -p $(LOCAL_OBJS_PATH)
 	mkdir -p $(PEER_OBJS_PATH)
+	mkdir -p $(PROTOCOL_OBJS_PATH)
+	mkdir -p $(UTIL_OBJS_PATH)
 	cd src/local_proxy && $(MAKE) 
 	cd src/peer_proxy && $(MAKE) 
 
