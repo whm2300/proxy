@@ -34,21 +34,6 @@ class Singleton {
     private:
         static T *_instance;
         static pthread_mutex_t _mutex;
-
-        /*
-        class garbo {
-            public:
-                garbo() { printf("garbo()\n"); }
-                ~garbo() {
-                    if (Singleton<T>::_instance != NULL) {
-                        delete Singleton<T>::_instance;
-                        Singleton<T>::_instance = NULL;
-                    }
-                    printf("~garbo()");
-                }
-        };
-        static garbo _garbo;
-        */
 };
 
 template<typename T>
@@ -56,10 +41,5 @@ T *Singleton<T>::_instance = NULL;
 
 template<typename T>
 pthread_mutex_t Singleton<T>::_mutex = PTHREAD_MUTEX_INITIALIZER;
-
-/*
-template<typename T>
-typename Singleton<T>::garbo Singleton<T>::_garbo;
-*/
 
 #endif  // SINGLETON_H_

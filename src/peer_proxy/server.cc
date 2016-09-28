@@ -123,6 +123,7 @@ void Server::SignalCallback(evutil_socket_t sig, short events,
 
 void Server::AcceptCallback(evutil_socket_t fd, short events, void *user_data) {
     int conn_fd = accept4(fd, NULL, NULL, SOCK_NONBLOCK | SOCK_CLOEXEC);
+    log_debug("new fd:%d", conn_fd);
     if (conn_fd < 0) {
         log_error("accept4 error. %s", strerror(errno));
         return ;
@@ -145,13 +146,28 @@ void Server::AcceptCallback(evutil_socket_t fd, short events, void *user_data) {
     }
     struct sockaddr_in *sin_addr = (struct sockaddr_in*)&addr;
     uint16_t listen_port = ntohs(sin_addr->sin_port);
-    log_debug("listen port:%d", listen_port);
-    if (listen_port == htons(CONFIG->get_port())) {  //管理fd，新代理连接。
+    log_debug("manage port:%d, config:%d", listen_port, CONFIG->get_port());
+    if (listen_port == CONFIG->get_port()) {  //管理连接和代理连接
         bufferevent_setcb(bev, ManageSocketReadCallback, NULL, 
                     ManageSocketEventCallback, user_data);
-    } else {  //代理连接
+    } else {  //外部新连接
         bufferevent_setcb(bev, PeerSocketReadCallback, NULL, 
                     PeerSocketEventCallback, user_data);
+
+        //建立代理
+        uint32_t token = server->GetToken();
+        if (server->_token_to_bufferevent.find(token) != 
+                    server->_token_to_bufferevent.end()) {
+            log_fatal("token exist. %d", token);
+            abort();
+        }
+        server->_token_to_bufferevent.insert(std::pair<int, bufferevent*>(token, bev));
+        bufferevent_disable(bev, EV_READ);
+        if (!server->SendNewConnectionCmd(bev, token)) {
+            bufferevent_free(bev);
+            return ;
+        }
+        log_debug("send new connection. token:%d", token);
     }
     bufferevent_enable(bev, EV_READ | EV_WRITE);
     return ;
@@ -159,19 +175,19 @@ void Server::AcceptCallback(evutil_socket_t fd, short events, void *user_data) {
 
 bool Server::RunServer() {
     /*
-    {
-        int pidfile = open(CONFIG->get_pidfile_path().c_str(), 
-                    O_WRONLY | O_CREAT, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
-        if (pidfile == -1){
-            log_error("Could not open pidfile. %s", strerror(errno));
-            return false;
-        }
-        char buf[21] = {0};
-        sprintf(buf, "%d", getpid());
-        write(pidfile, buf, strlen(buf));
-        ::close(pidfile);
-    }
-    */
+       {
+       int pidfile = open(CONFIG->get_pidfile_path().c_str(), 
+       O_WRONLY | O_CREAT, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
+       if (pidfile == -1){
+       log_error("Could not open pidfile. %s", strerror(errno));
+       return false;
+       }
+       char buf[21] = {0};
+       sprintf(buf, "%d", getpid());
+       write(pidfile, buf, strlen(buf));
+       ::close(pidfile);
+       }
+       */
 
     int res = event_base_dispatch(_evbase);
 
@@ -184,26 +200,22 @@ void Server::ManageSocketReadCallback(struct bufferevent *bev,
             void *user_data) {
     Server *server = (Server *)user_data;
     assert(server != NULL);
+
     struct evbuffer *input = bufferevent_get_input(bev);
     if (input == NULL) {
         return ;
     }
     do {
-        BuffereventMap::iterator it_map = server->_local_to_peer.find(bev);
-        if (it_map != server->_local_to_peer.end()) {
-            //代理连接，已存在映射。
-            if (it_map->second != NULL) {
-                server->MoveData(bev, it_map->second);
-                log_debug("local to peer");
-            } else {
-                server->_local_to_peer.erase(bev);
-                close(bufferevent_getfd(bev));
-                log_info("close bufferevent_getfd");
-                bufferevent_free(bev);
-            }
+        BuffereventMap::iterator map_it = server->_local_to_peer.find(bev);
+        if (map_it != server->_local_to_peer.end()) {
+            //内网代理连接已经配对，直接转发
+            server->MoveData(map_it->first, map_it->second);
+            server->MoveData(map_it->second, map_it->first);
+            break ;
         }
+
         if (!server->_packet.ParsePacket(input)) {
-            return ;
+            break ;
         }
         server->ProcessMsg(bev);
     } while (evbuffer_get_length(input) > 0);
@@ -225,20 +237,24 @@ void Server::ProcessMsg(struct bufferevent *bev) {
             log_info("local proxy");
             break;
         default :
-            log_error("error cmd:%d", cmd);
+            log_error("error cmd:0x%x", cmd);
             break;
     }
 }
 
 void Server::ProcessLocalRegister(struct bufferevent *bev) {
     assert(bev != NULL);
+    if (bev == _manage_bev) {
+        log_error("already regiter:%p", bev);
+        return ;
+    }
+
     if (_manage_bev != NULL) {
-        close(bufferevent_getfd(bev));
         bufferevent_free(bev);
         log_error("_manage_bev already register");
     }
     _manage_bev = bev;
-    log_debug("local register:%p", _manage_bev);
+    log_info("local register:%p", _manage_bev);
 }
 
 void Server::ProcessLocalProxy(struct bufferevent *bev) {
@@ -246,8 +262,8 @@ void Server::ProcessLocalProxy(struct bufferevent *bev) {
     msg.ParseFromArray(_packet.get_msg_data(), _packet.get_msg_len());
     IntToBufferevent::iterator it = _token_to_bufferevent.find(msg.token());
     if (it == _token_to_bufferevent.end()) {
-        close(bufferevent_getfd(bev));
         bufferevent_free(bev);
+        log_error("can not find token:%d", msg.token());
         return ;
     }
     _local_to_peer[bev] = it->second;
@@ -259,7 +275,6 @@ void Server::ProcessLocalProxy(struct bufferevent *bev) {
 
     bufferevent_enable(bev, EV_READ | EV_WRITE);
     bufferevent_enable(it->second, EV_READ | EV_WRITE);
-    log_info("peer:%p, local:%p", it->second, bev);
 }
 
 void Server::ManageSocketEventCallback(struct bufferevent *bev, 
@@ -267,14 +282,16 @@ void Server::ManageSocketEventCallback(struct bufferevent *bev,
     Server *server = (Server *)user_data;
     if (events & (BEV_EVENT_EOF | BEV_EVENT_ERROR)) {
         log_info("close local socket, close:%p, manage:%p", bev, server->_manage_bev);
-        BuffereventMap::iterator it = server->_local_to_peer.find(bev);
-        if (it != server->_local_to_peer.end()) {
-            server->MoveData(bev, it->second);
-            server->_peer_to_local.erase(it->second);
-            close(bufferevent_getfd(it->second));
-            bufferevent_free(it->second);
+        if (bev == server->_manage_bev) {
+            server->_manage_bev = NULL;
         }
-        server->_local_to_peer.erase(it);
+        BuffereventMap::iterator map_it = server->_local_to_peer.find(bev);
+        if (map_it != server->_local_to_peer.end()) {
+            server->MoveData(bev, map_it->second);
+            bufferevent_free(map_it->second);
+            server->_local_to_peer.erase(map_it);
+            log_info("release proxy");
+        }
         bufferevent_free(bev);
     }
 }
@@ -284,23 +301,25 @@ void Server::PeerSocketReadCallback(struct bufferevent *bev, void *user_data) {
     assert(server != NULL);
     BuffereventMap::iterator it_map = server->_peer_to_local.find(bev);
     if (it_map == server->_peer_to_local.end()) {  //还没有对应的转发连接
-        uint32_t token = server->GetToken();
-        if (server->_token_to_bufferevent.find(token) != 
-                    server->_token_to_bufferevent.end()) {
-            log_fatal("token exist. %d", token);
-            abort();
-        }
-        server->_token_to_bufferevent.insert(std::pair<int, bufferevent*>(token, bev));
-        bufferevent_disable(bev, EV_READ);
-        if (!server->SendNewConnectionCmd(bev, token)) {
-            close(bufferevent_getfd(bev));
-            bufferevent_free(bev);
-            return ;
-        }
-        log_debug("send new connection. token:%d", token);
+        /*
+           uint32_t token = server->GetToken();
+           if (server->_token_to_bufferevent.find(token) != 
+           server->_token_to_bufferevent.end()) {
+           log_fatal("token exist. %d", token);
+           abort();
+           }
+           server->_token_to_bufferevent.insert(std::pair<int, bufferevent*>(token, bev));
+           bufferevent_disable(bev, EV_READ);
+           if (!server->SendNewConnectionCmd(bev, token)) {
+           close(bufferevent_getfd(bev));
+           bufferevent_free(bev);
+           return ;
+           }
+           log_debug("send new connection. token:%d", token);
+           */
+        log_info("get peer data, but not establish connect");
     } else {  //转发连接已存在，直接转发。
         server->MoveData(bev, it_map->second);
-        log_info("peer to local");
     }
 }
 
@@ -308,21 +327,21 @@ void Server::PeerSocketEventCallback(struct bufferevent *bev, short events,
             void *user_data) {
     Server *server = (Server *)user_data;
     if (events & (BEV_EVENT_EOF | BEV_EVENT_ERROR)) {
-        log_info("close peer socket");
+        log_info("close peer socket, 0x%x", events);
         BuffereventMap::iterator it = server->_peer_to_local.find(bev);
         if (it != server->_peer_to_local.end()) {
             log_debug("close lcoal:%p, _manage:%p", it->second, server->_manage_bev);
             server->MoveData(bev, it->second);
             server->_local_to_peer.erase(it->second);
-            close(bufferevent_getfd(it->second));
             bufferevent_free(it->second);
+            server->_peer_to_local.erase(it);
         }
-        server->_peer_to_local.erase(it);
         bufferevent_free(bev);
     }
 }
 
 bool Server::SendNewConnectionCmd(bufferevent *bev, uint32_t token) {
+    log_debug("Send new connecion");
     int fd = bufferevent_getfd(bev);
     struct sockaddr addr;
     socklen_t len = sizeof(addr);
@@ -346,6 +365,7 @@ bool Server::SendNewConnectionCmd(bufferevent *bev, uint32_t token) {
         log_error("not find socket pair. peer port:%d", from_port);
         return false;
     }
+    log_info("from port:%d, to port:%d", from_port, to_port);
 
     NewConnection msg;
     msg.set_token(token);
@@ -373,7 +393,7 @@ int Server::MoveData(struct bufferevent *src, struct bufferevent *des) {
     int ret = 0;
     if (len > 0) {
         ret = evbuffer_remove_buffer(input, output, len);
-        log_info("proxy data. bytes:%d, %d", len, ret);
+        //log_info("proxy data. bytes:%d, %d", len, ret);
     }
     return ret;
 }

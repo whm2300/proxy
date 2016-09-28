@@ -21,6 +21,7 @@ Server::Server():_evbase(NULL), _manage_bev(NULL) {
 
 Server::~Server() {
 }
+
 bool Server::ConnectToPeer(const char *ip, uint16_t port) {
     int fd = ConnectBlock(ip, port);
     if (fd == -1){
@@ -36,8 +37,8 @@ bool Server::ConnectToPeer(const char *ip, uint16_t port) {
     bufferevent_write(_manage_bev, _packet.get_send_data(), 
                 _packet.get_send_len());
 
-    bufferevent_setcb(_manage_bev, LocalSocketReadCallback, NULL, 
-                LocalSocketEventCallback, this);
+    bufferevent_setcb(_manage_bev, ManageSocketReadCallback, NULL, 
+                ManageSocketEventCallback, this);
     bufferevent_enable(_manage_bev, EV_READ | EV_WRITE);
 
     return true;
@@ -45,6 +46,7 @@ bool Server::ConnectToPeer(const char *ip, uint16_t port) {
 
 int Server::ConnectBlock(const char *ip, uint16_t port) {
     int fd = socket(AF_INET, SOCK_STREAM, 0);
+    log_debug("new fd:%d", fd);
     if (fd <= 0) {
         log_error("get socket fd error", strerror(errno));
         return -1;
@@ -168,7 +170,7 @@ bool Server::RunServer() {
     return true;
 }
 
-void Server::LocalSocketReadCallback(struct bufferevent *bev, 
+void Server::ManageSocketReadCallback(struct bufferevent *bev, 
             void *user_data) {
     Server *server = (Server *)user_data;
     assert(server != NULL);
@@ -183,10 +185,10 @@ void Server::LocalSocketReadCallback(struct bufferevent *bev,
             server->MoveData(bev, it_map->second);
         } else {
             server->_local_to_real.erase(bev);
-            close(bufferevent_getfd(bev));
             log_info("close bufferevent_getfd");
             bufferevent_free(bev);
         }
+        return ;
     }
     if (!server->_packet.ParsePacket(input)) {
         return ;
@@ -236,8 +238,8 @@ void Server::ProcessNewProxy(struct bufferevent *bev) {
         return ;
     }
 
-    bufferevent_setcb(local_bev, LocalSocketReadCallback, NULL, 
-                LocalSocketEventCallback, this);
+    bufferevent_setcb(local_bev, ManageSocketReadCallback, NULL, 
+                ManageSocketEventCallback, this);
     bufferevent_enable(local_bev, EV_READ | EV_WRITE);
 
     //发送注册
@@ -259,7 +261,7 @@ void Server::ProcessNewProxy(struct bufferevent *bev) {
     bufferevent_enable(local_bev, EV_READ | EV_WRITE);
 }
 
-void Server::LocalSocketEventCallback(struct bufferevent *bev, 
+void Server::ManageSocketEventCallback(struct bufferevent *bev, 
             short events, void *user_data) {
     Server *server = (Server *)user_data;
     if (bev == server->_manage_bev) {
@@ -273,11 +275,9 @@ void Server::LocalSocketEventCallback(struct bufferevent *bev,
             log_info("find");
             server->MoveData(bev, it->second);
             server->_real_to_local.erase(it->second);
-            close(bufferevent_getfd(it->second));
             bufferevent_free(it->second);
         }
         server->_local_to_real.erase(it);
-        close(bufferevent_getfd(bev));
         bufferevent_free(bev);
         log_debug("close local socket over");
     }
@@ -291,7 +291,6 @@ void Server::RealSocketReadCallback(struct bufferevent *bev, void *user_data) {
         log_error("send to proxy error");
     } else {  //转发连接已存在，直接转发。
         server->MoveData(bev, it_map->second);
-        log_info("peer to local");
     }
 }
 
@@ -304,7 +303,6 @@ void Server::RealSocketEventCallback(struct bufferevent *bev, short events,
         if (it != server->_real_to_local.end()) {
             server->MoveData(bev, it->second);
             server->_local_to_real.erase(it->second);
-            close(bufferevent_getfd(it->second));
             bufferevent_free(it->second);
         }
         server->_real_to_local.erase(it);
@@ -320,7 +318,10 @@ int Server::MoveData(struct bufferevent *src, struct bufferevent *des) {
         return -1;
     }
     size_t len = evbuffer_get_length(input);
-    int ret = evbuffer_remove_buffer(input, output, len);
-    log_info("proxy data. bytes:%d, %d", len, ret);
+    int ret = 0;
+    if (len > 0) {
+        ret = evbuffer_remove_buffer(input, output, len);
+        //log_info("proxy data. bytes:%d, %d", len, ret);
+    }
     return ret;
 }

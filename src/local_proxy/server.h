@@ -29,9 +29,9 @@ class Server {
 
         static void SignalCallback(evutil_socket_t sig, short events, 
                     void *user_data);
-        static void LocalSocketReadCallback(struct bufferevent *bev, 
+        static void ManageSocketReadCallback(struct bufferevent *bev, 
                     void *user_data);
-        static void LocalSocketEventCallback(struct bufferevent *bev, 
+        static void ManageSocketEventCallback(struct bufferevent *bev, 
                     short events, void *user_data);
         static void RealSocketReadCallback(struct bufferevent *bev, 
                     void *user_data);

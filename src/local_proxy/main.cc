@@ -7,8 +7,8 @@
 
 bool InitialConfig(const std::string &config_path) {
     CONFIG->ReadConfig(config_path);
-    if (!SingletonLog::GetInstance()->OpenLog(CONFIG->get_log_folder(), 
-                    CONFIG->get_log_level()))
+    if (!SingletonLog::GetInstance()->InitialLog(CONFIG->get_log_folder(), 
+                    CONFIG->get_log_level(), 100))
     {
         printf("open log fail\n");
         return false;

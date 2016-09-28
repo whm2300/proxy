@@ -51,7 +51,7 @@ bool Packet::ParsePacket(struct evbuffer *input) {
     uint32_t msg_len = 0;
 
     uint16_t cmd = ntohs(*((uint16_t*)(packet_data + 2)));
-    log_info("cmd:0x%x", cmd);
+    //log_info("cmd:0x%x", cmd);
     _data_len = PACKET_HEAD_LEN - 4;
     if (cmd != HEART_BEAT && cmd != LOCAL_REGISTER) {
         packet_data = evbuffer_pullup(input, PACKET_HEAD_LEN);

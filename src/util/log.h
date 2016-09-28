@@ -1,11 +1,14 @@
 #ifndef _LOG_H_
 #define _LOG_H_
 
-#include <string>
 #include "define.h"
 #include "singleton.hpp"
 
-#define MAX_LOG_LENGTH 1024  //单个消息最大长度
+#include <string>
+
+#include <pthread.h>
+
+#define MAX_LOG_LENGTH 1024  //单日志最大长度
 
 class Log
 {
@@ -22,20 +25,25 @@ class Log
     public:
         Log();
         ~Log();
-        bool OpenLog(const std::string& log_folder, 
-                     const std::string &log_level);
-        bool CloseLog();
+        //max_log_size 单位：M
+        bool InitialLog(const std::string& log_folder, 
+                        const std::string &log_level, 
+                        const int max_log_size);
         void WriteLog(LOG_LEVEL log_level, const char *fmt, ...);
-
-        int get_fd() {return _log_fd; }
+        int get_log_fd() {return _log_fd; }
 
     private:
         enum LOG_LEVEL get_log_level(const std::string &log_level);
+        bool OpenLog(const std::string& log_folder);
+        bool CloseLog();
+        void RotateLog();
 
     public:
-        int _log_fd;
-
         LOG_LEVEL _log_level;
+        int _log_fd;
+        int64_t _max_log_size;
+        pthread_mutex_t _mutex;
+        std::string _log_folder;
         std::string _log_level_name[6];
 };
 
